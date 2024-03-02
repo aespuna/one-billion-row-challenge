@@ -15,7 +15,7 @@
 #  limitations under the License.
 #
 
-# Based on https://github.com/gunnarmorling/1brc/blob/main/src/main/java/dev/morling/onebrc/CreateMeasurements.java
+# Based on the script at https://github.com/gunnarmorling/1brc/
 
 import os
 import sys
@@ -23,38 +23,47 @@ import random
 import time
 
 
-def check_args(file_args):
+def exit_with_help():
     """
-    Sanity checks out input and prints out usage if input is not a positive integer
+    Print out usage and exit
     """
-    try:
-        if len(file_args) != 2 or int(file_args[1]) <= 0:
-            raise Exception()
-    except:
-        print("Usage:  create_measurements.py <positive integer number of records to create>")
-        print("        You can use underscore notation for large number of records.")
-        print("        For example:  1_000_000_000 for one billion")
-        exit()
+    print("Usage:  create_measurements.py <number_of_records> [output_file]")
+    print(
+        "        You can use underscore notation for large number of records.")
+    print("        For example:  1_000_000_000 for one billion")
+    exit()
 
 
-def build_weather_station_name_list():
+def parse_args():
+    args = sys.argv[1:]
+    if len(args) < 1:
+        exit_with_help()
+    if len(args) == 1:
+        return int(args[0]), None
+    if len(args) == 2:
+        return int(args[0]), args[1]
+
+    exit_with_help()
+
+
+def read_weather_station_data():
     """
     Grabs the weather station names from example data provided in repo and dedups
     """
-    station_names = []
+    stations = {}
     with open('./weather_stations.csv', 'r') as file:
-        file_contents = file.read()
-    for station in file_contents.splitlines():
-        if "#" in station:
-            next
-        else:
-            station_names.append(station.split(';')[0])
-    return list(set(station_names))
+        for station in file:
+            if "#" in station:
+                continue
+
+            name, temp = station.split(';')
+            stations[name] = float(temp)
+    return stations
 
 
-def convert_bytes(num):
+def format_bytes(num):
     """
-    Convert bytes to a human-readable format (e.g., KiB, MiB, GiB)
+    Format bytes to a human-readable format (e.g., KiB, MiB, GiB)
     """
     for x in ['bytes', 'KiB', 'MiB', 'GiB']:
         if num < 1024.0:
@@ -84,62 +93,66 @@ def estimate_file_size(weather_station_names, num_rows_to_create):
     """
     Tries to estimate how large a file the test data will be
     """
-    max_string = float('-inf')
-    min_string = float('inf')
-    per_record_size = 0
-    record_size_unit = "bytes"
+    longest_record_station_name = max(len(x) for x in weather_station_names) or 0
+    max_record_size = longest_record_station_name + len(";-99.9")
 
-    for station in weather_station_names:
-        if len(station) > max_string:
-            max_string = len(station)
-        if len(station) < min_string:
-            min_string = len(station)
-        per_record_size = ((max_string + min_string * 2) + len(",-123.4")) / 2
+    total_file_size = num_rows_to_create * max_record_size
+    human_file_size = format_bytes(total_file_size)
 
-    total_file_size = num_rows_to_create * per_record_size
-    human_file_size = convert_bytes(total_file_size)
-
-    return f"Estimated max file size is:  {human_file_size}.\nTrue size is probably much smaller (around half)."
+    return (f"Estimated max file size is:  {human_file_size}.\n"
+            f"True size is probably smaller.")
 
 
-def build_test_data(weather_station_names, num_rows_to_create):
+def write_progress(percentage):
+    filled = '=' * (int(percentage * 50) // 100)
+    sys.stdout.write("\r[%-50s] %d%%" % (filled, percentage))
+    sys.stdout.flush()
+
+
+def build_test_data(weather_stations, num_rows_to_create, output_file=None):
     """
-    Generates and writes to file the requested length of test data
+    Generates and writes to file the requested length of test data.
+    The maximum number of stations used is 10,000.
     """
+    if output_file is None:
+        output_file = "measurements.txt"
+
     start_time = time.time()
-    coldest_temp = -99.9
-    hottest_temp = 99.9
-    station_names_10k_max = random.choices(weather_station_names, k=10_000)
-    batch_size = 10000 # instead of writing line by line to file, process a batch of stations and put it to disk
+    batch_size = min(num_rows_to_create, 10_000)
+    weather_station_names = list(weather_stations.keys())
+    station_names_10k_max = random.choices(weather_station_names, k=batch_size)
     progress_step = max(1, (num_rows_to_create // batch_size) // 100)
     print('Building test data...')
 
     try:
-        with open("./measurements.txt", 'w') as file:
-            for s in range(0,num_rows_to_create // batch_size):
-                
+        with open(output_file, 'w') as file:
+            for s in range(0, num_rows_to_create // batch_size):
+
                 batch = random.choices(station_names_10k_max, k=batch_size)
-                prepped_deviated_batch = '\n'.join([f"{station};{random.uniform(coldest_temp, hottest_temp):.1f}" for station in batch]) # :.1f should quicker than round on a large scale, because round utilizes mathematical operation
+                prepped_deviated_batch = '\n'.join(
+                    [
+                        f"{station};{random.gauss(weather_stations[station], 10):.1f}"
+                        for station in batch])
                 file.write(prepped_deviated_batch + '\n')
-                
+
                 # Update progress bar every 1%
-                if s % progress_step == 0 or s == num_rows_to_create - 1:
-                    sys.stdout.write('\r')
-                    sys.stdout.write("[%-50s] %d%%" % ('=' * int((s + 1) / num_rows_to_create * 50), (s + 1) / num_rows_to_create * 100))
-                    sys.stdout.flush()
+                if s % progress_step == 0:
+                    write_progress((s * batch_size + 1) / num_rows_to_create * 100)
+
+            write_progress(100)
         sys.stdout.write('\n')
     except Exception as e:
         print("Something went wrong. Printing error info and exiting...")
         print(e)
         exit()
-    
+
     end_time = time.time()
     elapsed_time = end_time - start_time
-    file_size = os.path.getsize("./measurements.txt")
-    human_file_size = convert_bytes(file_size)
- 
-    print("Test data successfully written to 1brc/data/measurements.txt")
-    print(f"Actual file size:  {human_file_size}")
+    file_size = os.path.getsize(output_file)
+    human_file_size = format_bytes(file_size)
+
+    print(f"Test data successfully written to {output_file}.")
+    print(f"Actual file size: {human_file_size}")
     print(f"Elapsed time: {format_elapsed_time(elapsed_time)}")
 
 
@@ -147,12 +160,10 @@ def main():
     """
     main program function
     """
-    check_args(sys.argv)
-    num_rows_to_create = int(sys.argv[1])
-    weather_station_names = []
-    weather_station_names = build_weather_station_name_list()
+    num_rows_to_create, output_file = parse_args()
+    weather_station_names = read_weather_station_data()
     print(estimate_file_size(weather_station_names, num_rows_to_create))
-    build_test_data(weather_station_names, num_rows_to_create)
+    build_test_data(weather_station_names, num_rows_to_create, output_file)
     print("Test data build complete.")
 
 
